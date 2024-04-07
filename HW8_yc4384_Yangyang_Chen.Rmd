@@ -1,0 +1,134 @@
+---
+title: "HW8_yc4384_Yangyang_Chen"
+author: "yc4384_Yangyang_Chen"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+Load packages
+```{r, message=F}
+library(tidyverse)
+library(readxl)
+library(gee)
+library(lme4)
+library(nlme)
+```
+
+## Problem 1
+
+Import data
+```{r}
+health_df = 
+  read_excel("HW8-HEALTH.xlsx") |> 
+  janitor::clean_names() |> 
+  mutate(
+    id = factor(id),
+    time = factor(time),
+    txt = factor(txt, levels = c("Control", "Intervention")),
+    health = factor(health, levels = c("Poor", "Good")),
+    agegroup = factor(agegroup)
+  )
+```
+
+a) 
+**Evaluate the bivariate, cross-sectional relationship between randomized group assignment and
+participants health self-rating at the time of randomization. Interpret and discuss these findings.**
+
+Samples that were given the control treatment (no educational intervention) had a more even-split health responses, where as lower proportion of samples in the intervention treatment reported good health. By count, there are more samples who reported poor health in the intervention group than the control group, even when the total sample count in the control group (41) exceeds that of the intervention group (39).
+
+If the baseline health status for the 2 groups are indeed statistically unequivalent, the discrepancy could impact study conclusions when the rooted differences between the groups are ignored. 
+
+```{r, message=F}
+# filter in only the first visits
+data_bl =
+  health_df |> 
+  filter(
+    time == "1"
+  )
+
+# plot the response counts for both the control and the intervention group
+data_bl |> 
+  group_by(txt, health) |> 
+  summarize(count = n()) |> 
+  ggplot(aes(x = health, y = count, fill = health)) +
+  geom_col() +
+  scale_fill_manual(values = c("#A23E14", "#41802C")) +
+  facet_grid(cols = vars(txt)) +
+  geom_text(aes(label = count), vjust = 3) +
+  labs(
+    title = "Group Assignment and Health Self-rating at Time of Randomization",
+    y = "Count"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(size = 11, hjust = 0.5)
+  )
+```
+
+After a more robust statistical evaluation, the coefficient significance of a logistic model tells a different story. Samples assigned to the intervention did not have a significant decrease in log odds of reporting good health, and this points to that randomization is preserved at the baseline. 
+
+```{r}
+glm_fit = glm(health ~ txt, family = binomial(link = "logit"), data = data_bl)
+summary(glm_fit)
+```
+
+The benefit of having longitudinal data is it could be used to control for time-invariant differences within a subject. Having multiple observations per individual allows us to base estimates on the variation within individuals. However, the correlation among the observations from an individual must be taken into account somehow, and there are 2 ways of address such structure. 
+
+b)
+**Interpret health status over time using a GEE model**
+
+First, the non-parametric GEE model averages over all individuals to make a population inference by assuming some within-subject covariance structure. For example, according to our summary estimates, compared to the population that reported "poor" health as its baseline response, the "good" health population has a 1.82 increase in log odds of reporting another good health response by the second visit, while adjusting for treatment and age group. 
+
+```{r}
+# Create a new column showing baseline health rating, and a new column representing good health as 1, poor health as 0
+
+data_gee =
+  health_df |> 
+  pivot_wider(
+    names_from = time,
+    values_from = health
+  ) |> 
+  pivot_longer(
+    `2`:`4`, 
+    names_to = "time", 
+    values_to = "health"
+  ) |> 
+  rename("baseline" = `1`) |> 
+  mutate(
+    time = factor(time),
+    baseline = factor(baseline, levels = c("Poor", "Good")),
+    health = factor(health, levels = c("Poor", "Good")),
+    nhealth = as.numeric(health == "Good")
+  )
+```
+
+```{r}
+gee_fit = gee(nhealth ~ baseline + txt + time + agegroup, 
+              data = data_gee, 
+              family = "binomial", 
+              id = id,
+              corstr = "unstructured",
+              scale.fix = FALSE) 
+summary(gee_fit)
+```
+
+c)
+**Generalized Linear Mixed Model**
+
+Second, GLMMs are an extension of generalized linear models (GLMs) to include both fixed and random effects on a subject level, and therefore their interpretations are similar. Reading from our summary, compared to an individual that reported "poor" health as its baseline response, a "good" health individual has a 2.81 increase in log odds of reporting another good health response by the second month's visit, while adjusting for treatment and age group. 
+
+```{r}
+glmm_fit = glmer(nhealth ~ baseline + txt + time + agegroup + (1 | id),
+                 family = 'binomial', data = data_gee)
+summary(glmm_fit)
+```
+
+Note that the coefficients between the GEE and the GLMM models shall not be compared, as the former is on the population level and the latter is on the subject level. The GLMM model fits random intercepts per individual, which adds or subtracts from the fixed effect marginal intercept $\beta_0$. A GLMM model is inherently different from a GEE model, because it estimates its covariance model, and not presume it under some structure. Furthermore, there is an added random factor with respect to each subject at the cost of computation power. 
+
+```{r}
+random.effects(glmm_fit)
+```
